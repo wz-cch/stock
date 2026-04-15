@@ -14,10 +14,26 @@ import os
 # ============================================================
 # ✏️  設定區：改這裡就好
 # ============================================================
-STOCK_ID   = "2327"        # 台股代號（不含 .TW）
-PERIOD     = "1y"          # 抓多久的K線："6mo" / "1y" / "2y"
-OUTPUT_DIR = "./"          # CSV 輸出位置
+STOCKS_FILE = "stocks.txt"  # 追蹤清單（每行一個代號，# 開頭為註解）
+PERIOD      = "1y"          # 抓多久的K線："6mo" / "1y" / "2y"
+OUTPUT_DIR  = "data"        # 根輸出目錄（每支股票建立子資料夾）
 # ============================================================
+
+def _load_stock_ids(filepath: str) -> list:
+    """讀取 stocks.txt，回傳代號清單（自動處理 .TW 後綴）"""
+    ids = []
+    try:
+        with open(filepath, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # 移除 .TW / .tw 後綴，程式內部統一用純代號
+                sid = line.upper().removesuffix(".TW")
+                ids.append(sid)
+    except FileNotFoundError:
+        print(f"⚠️  找不到 {filepath}，請建立追蹤清單")
+    return ids
 
 def fetch_price_data(stock_id: str, period: str) -> pd.DataFrame:
     """從 Yahoo Finance 抓股價 K 線"""
@@ -421,12 +437,14 @@ def print_latest_summary(df: pd.DataFrame, stock_id: str):
     print(f"  綜合訊號 : {latest['訊號'] or '無特別訊號'}")
     print("=" * 60)
 
-def save_outputs(df: pd.DataFrame, rev_df: pd.DataFrame, stock_id: str, shareholder_df: pd.DataFrame = None) -> str:
+def save_outputs(df: pd.DataFrame, rev_df: pd.DataFrame, stock_id: str, shareholder_df: pd.DataFrame = None, output_dir: str = None) -> str:
     """存成 CSV（同日/同月重跑會覆蓋）"""
+    if output_dir is None:
+        output_dir = OUTPUT_DIR
     today = datetime.now().strftime("%Y%m%d")
     month = datetime.now().strftime("%Y%m")
     name = f"{stock_id}_綜合分析_{today}.csv"
-    path = os.path.join(OUTPUT_DIR, name)
+    path = os.path.join(output_dir, name)
 
     df_out = df.copy()
     df_out.index = df_out.index.strftime("%Y-%m-%d")
@@ -471,7 +489,7 @@ def save_outputs(df: pd.DataFrame, rev_df: pd.DataFrame, stock_id: str, sharehol
 
     if not rev_df.empty:
         rev_name = f"{stock_id}_月營收_{month}.csv"
-        rev_path = os.path.join(OUTPUT_DIR, rev_name)
+        rev_path = os.path.join(output_dir, rev_name)
         rev_out = rev_df.copy()
         rev_out.to_csv(rev_path, index=False, encoding="utf-8-sig")
         print(f"  💾 月營收 CSV  ：{rev_path}")
@@ -479,7 +497,7 @@ def save_outputs(df: pd.DataFrame, rev_df: pd.DataFrame, stock_id: str, sharehol
     # 股權分散週資料獨立 CSV（每月覆蓋）
     if shareholder_df is not None and not shareholder_df.empty:
         sh_name = f"{stock_id}_股權分散_{month}.csv"
-        sh_path = os.path.join(OUTPUT_DIR, sh_name)
+        sh_path = os.path.join(output_dir, sh_name)
         shareholder_df.to_csv(sh_path, encoding="utf-8-sig")
         print(f"  💾 股權分散 CSV：{sh_path}")
 
@@ -492,37 +510,58 @@ def main():
     print("╚══════════════════════════════════════════════╝")
     print()
 
-    # 1. 抓股價
-    df = fetch_price_data(STOCK_ID, PERIOD)
-    
-    # 2. 抓籌碼
-    start_date = df.index[0].strftime("%Y-%m-%d")
-    chip_df = fetch_chip_data(STOCK_ID, start_date)
-    
-    # 3. 合併籌碼數據 (Left Join)
-    if not chip_df.empty:
-        df = df.merge(chip_df, left_index=True, right_index=True, how="left")
+    stock_ids = _load_stock_ids(STOCKS_FILE)
+    if not stock_ids:
+        print("❌ 追蹤清單為空，請在 stocks.txt 中加入股票代號")
+        return
 
-    # 3b. 抓融資融券並合併
-    margin_df = fetch_margin_data(STOCK_ID, start_date)
-    if not margin_df.empty:
-        df = df.merge(margin_df, left_index=True, right_index=True, how="left")
-
-    # 4. 計算指標 (現在可以同時讀取價格與籌碼)
-    df = calc_technical_indicators(df)
-    
-    # 5. 抓月營收
-    rev_df = fetch_monthly_revenue(STOCK_ID)
-
-    # 6. 抓股權分散週資料（TDCC，約一年）
-    shareholder_df = fetch_shareholder_dist(STOCK_ID)
-
-    print_latest_summary(df, STOCK_ID)
-    save_outputs(df, rev_df, STOCK_ID, shareholder_df)
-
+    print(f"📋 追蹤清單：{', '.join(stock_ids)}（共 {len(stock_ids)} 支）")
     print()
-    print("✅ 完成！請把輸出的綜合分析 CSV 貼給 Claude 做深度分析。")
-    print()
+
+    for stock_id in stock_ids:
+        # 每支股票建立獨立子資料夾
+        stock_dir = os.path.join(OUTPUT_DIR, stock_id)
+        os.makedirs(stock_dir, exist_ok=True)
+
+        print(f"{'='*60}")
+        print(f"  處理中：{stock_id}")
+        print(f"{'='*60}")
+
+        try:
+            # 1. 抓股價
+            df = fetch_price_data(stock_id, PERIOD)
+
+            # 2. 抓籌碼
+            start_date = df.index[0].strftime("%Y-%m-%d")
+            chip_df = fetch_chip_data(stock_id, start_date)
+
+            # 3. 合併籌碼數據 (Left Join)
+            if not chip_df.empty:
+                df = df.merge(chip_df, left_index=True, right_index=True, how="left")
+
+            # 3b. 抓融資融券並合併
+            margin_df = fetch_margin_data(stock_id, start_date)
+            if not margin_df.empty:
+                df = df.merge(margin_df, left_index=True, right_index=True, how="left")
+
+            # 4. 計算指標
+            df = calc_technical_indicators(df)
+
+            # 5. 抓月營收（ETF 無此資料，空 DataFrame 時跳過）
+            rev_df = fetch_monthly_revenue(stock_id)
+
+            # 6. 抓股權分散週資料（TDCC，約一年）
+            shareholder_df = fetch_shareholder_dist(stock_id)
+
+            print_latest_summary(df, stock_id)
+            save_outputs(df, rev_df, stock_id, shareholder_df, output_dir=stock_dir)
+
+        except Exception as e:
+            print(f"  ❌ {stock_id} 處理失敗：{e}")
+
+        print()
+
+    print("✅ 全部完成！")
 
 if __name__ == "__main__":
     main()
