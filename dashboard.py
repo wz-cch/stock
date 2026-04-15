@@ -242,20 +242,39 @@ for ma_col, color, label in [(ma5, "#ff9800", "MA5"), (ma20, "#2196F3", "MA20"),
         fig1.add_trace(go.Scatter(x=df_show.index, y=df_show[ma_col], name=label,
             line=dict(color=color, width=1.2)))
 
-# 強訊號垂直標記線
-if _sig_col:
+# 強訊號三角形標記（紅=買訊在低點下方，綠=賣訊在高點上方）
+if _sig_col and h_col and l_col:
+    bull_x, bull_y, bull_txt = [], [], []
+    bear_x, bear_y, bear_txt = [], [], []
     for date_idx, row in df_show.iterrows():
         sig_str = str(row.get(_sig_col, ""))
-        for kw, lc, anno in _VLINE_SIGNALS:
+        for kw, _lc, anno in _VLINE_SIGNALS:
             if kw in sig_str:
-                fig1.add_vline(
-                    x=date_idx.isoformat(), line_width=1.2, line_dash="dot", line_color=lc,
-                    annotation_text=anno,
-                    annotation_position="top",
-                    annotation_font_size=9,
-                    annotation_font_color=lc,
-                )
-                break  # 每日只標一條（最高優先）
+                if "買" in anno or "金叉" in anno:
+                    bull_x.append(date_idx)
+                    bull_y.append(row[l_col] * 0.997)
+                    bull_txt.append(anno.replace("▲ ", ""))
+                else:
+                    bear_x.append(date_idx)
+                    bear_y.append(row[h_col] * 1.003)
+                    bear_txt.append(anno.replace("▼ ", ""))
+                break
+    if bull_x:
+        fig1.add_trace(go.Scatter(
+            x=bull_x, y=bull_y, mode="markers+text",
+            marker=dict(symbol="triangle-up", size=10, color="#ef5350"),
+            text=bull_txt, textposition="bottom center",
+            textfont=dict(size=9, color="#ef5350"),
+            name="買訊", showlegend=True,
+        ))
+    if bear_x:
+        fig1.add_trace(go.Scatter(
+            x=bear_x, y=bear_y, mode="markers+text",
+            marker=dict(symbol="triangle-down", size=10, color="#26a69a"),
+            text=bear_txt, textposition="top center",
+            textfont=dict(size=9, color="#26a69a"),
+            name="賣訊", showlegend=True,
+        ))
 
 fig1.update_layout(height=460, xaxis_rangeslider_visible=False, margin=dict(t=30, b=20))
 st.plotly_chart(fig1, use_container_width=True)
