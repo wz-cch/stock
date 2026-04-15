@@ -177,18 +177,45 @@ def fetch_margin_data(stock_id: str, start_date: str) -> pd.DataFrame:
         print(f"  ⚠️  融資融券抓取失敗：{e}")
         return pd.DataFrame()
 
-def fetch_monthly_revenue(stock_id: str) -> pd.DataFrame:
-    """抓月營收（FinMind API），自行計算年增率與月增率"""
-    print("📡 抓取月營收資料（FinMind API）...")
-    start_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
+def _calc_rev_growth(df: pd.DataFrame) -> pd.DataFrame:
+    """對月營收 DataFrame 計算年增率與月增率（需含 _year/_month 欄）"""
+    rev_lookup = {(r["_year"], r["_month"]): r["月營收(千元)"] for _, r in df.iterrows()}
+    yoy_list, mom_list = [], []
+    for _, row in df.iterrows():
+        y, m = row["_year"], row["_month"]
+        prev_year  = rev_lookup.get((y - 1, m))
+        prev_month = rev_lookup.get((y, m - 1) if m > 1 else (y - 1, 12))
+        cur = row["月營收(千元)"]
+        yoy_list.append(round((cur / prev_year  - 1) * 100, 2) if prev_year  else None)
+        mom_list.append(round((cur / prev_month - 1) * 100, 2) if prev_month else None)
+    df["年增率(%)"] = yoy_list
+    df["月增率(%)"] = mom_list
+    return df
+
+def fetch_monthly_revenue(stock_id: str, existing_df: pd.DataFrame = None) -> pd.DataFrame:
+    """
+    抓月營收（FinMind API），自行計算年增率與月增率。
+    若傳入 existing_df，只補缺少的月份（最後一個月仍重新抓以取得最新數字）。
+    """
+    # 決定起始日期：若有舊資料則從倒數第 2 個月補起，確保最新月能更新
+    if existing_df is not None and not existing_df.empty and "年月" in existing_df.columns:
+        last_ym = existing_df["年月"].iloc[-1]          # e.g. "2026/03"
+        y, m = int(last_ym[:4]), int(last_ym[5:7])
+        # 起始從最後已知月的前一個月，確保最新月的數字能被更新
+        if m == 1:
+            fetch_start = f"{y-1}-12-01"
+        else:
+            fetch_start = f"{y}-{m-1:02d}-01"
+        print(f"📡 補抓月營收（{fetch_start} 起，FinMind API）...")
+    else:
+        existing_df = pd.DataFrame()
+        fetch_start = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
+        print("📡 抓取月營收資料（FinMind API）...")
+
     try:
         r = requests.get(
             "https://api.finmindtrade.com/api/v4/data",
-            params={
-                "dataset":    "TaiwanStockMonthRevenue",
-                "data_id":    stock_id,
-                "start_date": start_date,
-            },
+            params={"dataset": "TaiwanStockMonthRevenue", "data_id": stock_id, "start_date": fetch_start},
             timeout=15,
             headers={"User-Agent": "Mozilla/5.0"},
         )
@@ -197,37 +224,37 @@ def fetch_monthly_revenue(stock_id: str) -> pd.DataFrame:
         if payload.get("msg") != "success" or not payload.get("data"):
             raise ValueError(f"FinMind 回傳異常：{payload.get('msg')}")
 
-        records = []
+        new_records = []
         for row in payload["data"]:
-            records.append({
+            new_records.append({
                 "年月":         f"{row['revenue_year']}/{row['revenue_month']:02d}",
                 "_year":        row["revenue_year"],
                 "_month":       row["revenue_month"],
                 "月營收(千元)": round(row.get("revenue", 0) / 1000),
             })
-        df = pd.DataFrame(records).drop_duplicates("年月").sort_values("年月").reset_index(drop=True)
+        df_new = pd.DataFrame(new_records)
 
-        # 自行計算年增率與月增率（API 未提供）
-        rev_lookup = {(r["_year"], r["_month"]): r["月營收(千元)"] for _, r in df.iterrows()}
-        yoy_list, mom_list = [], []
-        for _, row in df.iterrows():
-            y, m = row["_year"], row["_month"]
-            prev_year = rev_lookup.get((y - 1, m))
-            prev_month = rev_lookup.get((y, m - 1) if m > 1 else (y - 1, 12))
-            cur = row["月營收(千元)"]
-            yoy_list.append(round((cur / prev_year - 1) * 100, 2) if prev_year else None)
-            mom_list.append(round((cur / prev_month - 1) * 100, 2) if prev_month else None)
+        # 合併舊資料：舊資料加上 _year/_month 以便計算，新資料覆蓋重疊月份
+        if not existing_df.empty:
+            ex = existing_df[["年月", "月營收(千元)"]].copy()
+            ex["_year"]  = ex["年月"].str[:4].astype(int)
+            ex["_month"] = ex["年月"].str[5:7].astype(int)
+            df_all = pd.concat([ex, df_new], ignore_index=True)
+        else:
+            df_all = df_new
 
-        df["年增率(%)"] = yoy_list
-        df["月增率(%)"] = mom_list
-        df = df.drop(columns=["_year", "_month"])
-        print(f"  ✅ 取得 {len(df)} 筆月營收（FinMind）")
-        return df
+        df_all = df_all.drop_duplicates("年月", keep="last").sort_values("年月").reset_index(drop=True)
+        df_all = _calc_rev_growth(df_all)
+        df_all = df_all.drop(columns=["_year", "_month"])
+
+        new_cnt = len(df_new.drop_duplicates("年月"))
+        print(f"  ✅ 月營收更新 {new_cnt} 筆，合計 {len(df_all)} 筆")
+        return df_all
     except Exception as e:
         print(f"  ⚠️  月營收抓取失敗：{e}")
-        return pd.DataFrame()
+        return existing_df if existing_df is not None else pd.DataFrame()
 
-def fetch_shareholder_dist(stock_id: str) -> pd.DataFrame:
+def fetch_shareholder_dist(stock_id: str, existing_df: pd.DataFrame = None) -> pd.DataFrame:
     """
     抓 TDCC 股權分散表週歷史資料（約一年），計算每週大戶與散戶持股比
     大戶：400 張以上（分級 12~15）
@@ -300,19 +327,36 @@ def fetch_shareholder_dist(stock_id: str) -> pd.DataFrame:
                 "散戶人數":      small_cnt,
             }
 
+        # 只抓既有資料中缺少的日期
+        existing_dates = set(existing_df.index.tolist()) if existing_df is not None and not existing_df.empty else set()
+        missing = [d for d in sorted(all_dates)
+                   if f"{d[:4]}-{d[4:6]}-{d[6:8]}" not in existing_dates]
+
+        if not missing:
+            print(f"  ⏭️  股權分散資料已是最新（{len(existing_df)} 週），無需更新")
+            return existing_df
+
+        print(f"  📥 需補抓 {len(missing)} 週（已有 {len(existing_dates)} 週）")
         records = []
-        for d in sorted(all_dates):
+        for d in missing:
             row = _query_week(d)
             if row:
                 date_fmt = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
                 records.append({"日期": date_fmt, **row})
 
-        df_s = pd.DataFrame(records).set_index("日期")
-        print(f"  ✅ 取得 {len(df_s)} 週的股權分散資料")
+        df_new = pd.DataFrame(records).set_index("日期") if records else pd.DataFrame()
+
+        # 合併既有資料
+        if existing_df is not None and not existing_df.empty:
+            df_s = pd.concat([existing_df, df_new]).sort_index()
+        else:
+            df_s = df_new
+
+        print(f"  ✅ 股權分散共 {len(df_s)} 週（補抓 {len(records)} 筆）")
         return df_s
     except Exception as e:
         print(f"  ⚠️  股權分散抓取失敗：{e}")
-        return pd.DataFrame()
+        return existing_df if existing_df is not None else pd.DataFrame()
 
 def calc_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """計算技術指標 + 籌碼訊號"""
@@ -551,23 +595,13 @@ def main():
             # 4. 計算指標
             df = calc_technical_indicators(df)
 
-            # 5. 月營收：當月檔案已存在則直接讀取，不重新抓取
-            if os.path.exists(rev_path):
-                print(f"  ⏭️  月營收當月檔案已存在，跳過重新抓取")
-                rev_df = pd.read_csv(rev_path)
-            else:
-                rev_df = fetch_monthly_revenue(stock_id)
+            # 5. 月營收：讀入既有資料，只補新月份
+            existing_rev = pd.read_csv(rev_path) if os.path.exists(rev_path) else None
+            rev_df = fetch_monthly_revenue(stock_id, existing_df=existing_rev)
 
-            # 6. 股權分散：當月檔案存在且距今未超過 7 天則跳過（TDCC 每週更新）
-            if os.path.exists(sh_path):
-                age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(sh_path))).days
-                if age_days < 7:
-                    print(f"  ⏭️  股權分散資料距今 {age_days} 天，跳過重新抓取")
-                    shareholder_df = pd.read_csv(sh_path, index_col="日期")
-                else:
-                    shareholder_df = fetch_shareholder_dist(stock_id)
-            else:
-                shareholder_df = fetch_shareholder_dist(stock_id)
+            # 6. 股權分散：讀入既有資料，只補缺少的週
+            existing_sh = pd.read_csv(sh_path, index_col="日期") if os.path.exists(sh_path) else None
+            shareholder_df = fetch_shareholder_dist(stock_id, existing_df=existing_sh)
 
             print_latest_summary(df, stock_id)
             save_outputs(df, rev_df, stock_id, shareholder_df, output_dir=stock_dir)
