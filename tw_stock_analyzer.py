@@ -528,6 +528,10 @@ def main():
         print(f"{'='*60}")
 
         try:
+            month = datetime.now().strftime("%Y%m")
+            rev_path = os.path.join(stock_dir, f"{stock_id}_月營收_{month}.csv")
+            sh_path  = os.path.join(stock_dir, f"{stock_id}_股權分散_{month}.csv")
+
             # 1. 抓股價
             df = fetch_price_data(stock_id, PERIOD)
 
@@ -547,11 +551,23 @@ def main():
             # 4. 計算指標
             df = calc_technical_indicators(df)
 
-            # 5. 抓月營收（ETF 無此資料，空 DataFrame 時跳過）
-            rev_df = fetch_monthly_revenue(stock_id)
+            # 5. 月營收：當月檔案已存在則直接讀取，不重新抓取
+            if os.path.exists(rev_path):
+                print(f"  ⏭️  月營收當月檔案已存在，跳過重新抓取")
+                rev_df = pd.read_csv(rev_path)
+            else:
+                rev_df = fetch_monthly_revenue(stock_id)
 
-            # 6. 抓股權分散週資料（TDCC，約一年）
-            shareholder_df = fetch_shareholder_dist(stock_id)
+            # 6. 股權分散：當月檔案存在且距今未超過 7 天則跳過（TDCC 每週更新）
+            if os.path.exists(sh_path):
+                age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(sh_path))).days
+                if age_days < 7:
+                    print(f"  ⏭️  股權分散資料距今 {age_days} 天，跳過重新抓取")
+                    shareholder_df = pd.read_csv(sh_path, index_col="日期")
+                else:
+                    shareholder_df = fetch_shareholder_dist(stock_id)
+            else:
+                shareholder_df = fetch_shareholder_dist(stock_id)
 
             print_latest_summary(df, stock_id)
             save_outputs(df, rev_df, stock_id, shareholder_df, output_dir=stock_dir)
