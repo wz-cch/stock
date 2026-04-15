@@ -171,6 +171,11 @@ with st.sidebar:
     days = st.slider("顯示天數", min_value=30, max_value=365, value=90, step=10)
     st.caption(f"資料來自 data/{stock_id}/")
 
+    st.divider()
+    st.markdown("**顯示面板**")
+    _ALL_PANELS = ["K線", "成交量", "MACD", "KD/RSI", "法人", "融資券"]
+    active_panels = {p for p in _ALL_PANELS if st.checkbox(p, value=True, key=f"panel_{p}")}
+
     # 近期訊號歷程（資料載入後填入，見下方）
     _sidebar_signal_placeholder = st.empty()
 
@@ -244,7 +249,7 @@ if _sig_col:
 st.divider()
 
 # ─────────────────────────────────────────────────────────────
-# 主圖：K線·成交量·MACD·KD/RSI（共享x軸，縮放全部聯動）
+# 主圖：動態面板（共享x軸，sidebar 勾選開關各 row）
 # ─────────────────────────────────────────────────────────────
 st.subheader("📈 技術分析")
 
@@ -265,173 +270,195 @@ macd_sig  = col(df, "MACD_Signal(元)", "MACD_Signal")
 macd_hist = col(df, "MACD_Hist(元)",   "MACD_Hist")
 kd_k      = col(df, "K值(%)", "K值")
 kd_d      = col(df, "D值(%)", "D值")
+fi_col    = col(df, "外資買賣超(張)",   "外資買賣超")
+it_col    = col(df, "投信買賣超(張)",   "投信買賣超")
+dl_col    = col(df, "自營商買賣超(張)", "自營商買賣超")
+mb_col    = col(df, "融資餘額(張)", "融資餘額")
+ss_col    = col(df, "融券餘額(張)", "融券餘額")
 
-fig_main = make_subplots(
-    rows=6, cols=1,
-    shared_xaxes=True,
-    vertical_spacing=0.02,
-    row_heights=[0.38, 0.12, 0.14, 0.14, 0.12, 0.10],
-    specs=[[{}], [{}], [{}], [{"secondary_y": True}], [{}], [{"secondary_y": True}]],
-)
+# 面板設定：(名稱, secondary_y, 高度比例)
+_PANEL_CFG = [
+    ("K線",   False, 0.40),
+    ("成交量", False, 0.13),
+    ("MACD",  False, 0.15),
+    ("KD/RSI", True, 0.15),
+    ("法人",  False, 0.10),
+    ("融資券",  True, 0.07),
+]
+_active_cfg = [(p, sy, h) for p, sy, h in _PANEL_CFG if p in active_panels]
 
-# ── Row 1: K線 + BB + MA ──
-fig_main.add_trace(go.Candlestick(
-    x=df_show.index, open=df_show[o_col], high=df_show[h_col],
-    low=df_show[l_col], close=df_show[close_col],
-    name="K線", increasing_line_color="#ef5350", decreasing_line_color="#26a69a",
-), row=1, col=1)
-if bbu:
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[bbl], name="BB帶",
-        line=dict(color="rgba(255,165,0,0.4)", dash="dot"),
-        legendgroup="BB", showlegend=True,
-        fill=None), row=1, col=1)
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[bbu], name="BB上軌",
-        line=dict(color="rgba(255,165,0,0.4)", dash="dot"),
-        legendgroup="BB", showlegend=False,
-        fill="tonexty", fillcolor="rgba(255,165,0,0.07)"), row=1, col=1)
-if bbm:
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[bbm], name="BB中軌",
-        line=dict(color="rgba(255,165,0,0.9)", dash="dash"),
-        legendgroup="BB", showlegend=False), row=1, col=1)
-for ma_c, clr, lbl in [(ma5, "#ff9800", "MA5"), (ma20, "#2196F3", "MA20"), (ma60, "#9C27B0", "MA60")]:
-    if ma_c:
-        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[ma_c], name=lbl,
-            line=dict(color=clr, width=1.2)), row=1, col=1)
+if not _active_cfg:
+    st.info("請在側邊欄勾選至少一個面板")
+else:
+    _n       = len(_active_cfg)
+    _h_sum   = sum(h for _, _, h in _active_cfg)
+    _heights = [h / _h_sum for _, _, h in _active_cfg]
+    _specs   = [[{"secondary_y": sy}] for _, sy, _ in _active_cfg]
+    _row_map = {p: i + 1 for i, (p, _, _h) in enumerate(_active_cfg)}
 
-# 訊號三角形標記
-if _sig_col and h_col and l_col:
-    bull_x, bull_y, bull_txt = [], [], []
-    bear_x, bear_y, bear_txt = [], [], []
-    for date_idx, drow in df_show.iterrows():
-        sig_str = str(drow.get(_sig_col, ""))
-        for kw, _lc, anno in _VLINE_SIGNALS:
-            if kw in sig_str:
-                if "買" in anno or "金叉" in anno:
-                    bull_x.append(date_idx); bull_y.append(drow[l_col] * 0.997)
-                    bull_txt.append(anno.replace("▲ ", ""))
-                else:
-                    bear_x.append(date_idx); bear_y.append(drow[h_col] * 1.003)
-                    bear_txt.append(anno.replace("▼ ", ""))
-                break
-    if bull_x:
-        fig_main.add_trace(go.Scatter(
-            x=bull_x, y=bull_y, mode="markers+text",
-            marker=dict(symbol="triangle-up", size=10, color="#ef5350"),
-            text=bull_txt, textposition="bottom center",
-            textfont=dict(size=9, color="#ef5350"), name="買訊",
-        ), row=1, col=1)
-    if bear_x:
-        fig_main.add_trace(go.Scatter(
-            x=bear_x, y=bear_y, mode="markers+text",
-            marker=dict(symbol="triangle-down", size=10, color="#26a69a"),
-            text=bear_txt, textposition="top center",
-            textfont=dict(size=9, color="#26a69a"), name="賣訊",
-        ), row=1, col=1)
-
-# 跳空缺口帶
-_gap = find_latest_active_gap(df, h_col, l_col) if (h_col and l_col) else None
-if _gap:
-    _gtype, _gy0, _gy1, _glabel = _gap
-    fig_main.add_hrect(
-        y0=_gy0, y1=_gy1, row=1, col=1,
-        fillcolor="rgba(239,83,80,0.18)" if _gtype == "up" else "rgba(38,166,154,0.18)",
-        line_width=0,
-        annotation_text=_glabel, annotation_position="left",
-        annotation_font_size=10,
-        annotation_font_color="#ef5350" if _gtype == "up" else "#26a69a",
+    fig_main = make_subplots(
+        rows=_n, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=_heights,
+        specs=_specs,
     )
 
-# ── Row 2: 成交量 ──
-if vol_col:
-    vol_colors = ["#ef5350" if df_show[close_col].iloc[i] >= df_show[close_col].iloc[i-1]
-                  else "#26a69a" for i in range(len(df_show))]
-    fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[vol_col], name="成交量",
-        marker_color=vol_colors, opacity=0.7), row=2, col=1)
-    if vma5_col:
-        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[vma5_col], name="Vol MA5",
-            line=dict(color="#ff9800", width=1.2)), row=2, col=1)
-    if vma20_col:
-        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[vma20_col], name="Vol MA20",
-            line=dict(color="#2196F3", width=1.2)), row=2, col=1)
+    # ── K線 ──
+    if "K線" in _row_map:
+        _r = _row_map["K線"]
+        fig_main.add_trace(go.Candlestick(
+            x=df_show.index, open=df_show[o_col], high=df_show[h_col],
+            low=df_show[l_col], close=df_show[close_col],
+            name="K線", increasing_line_color="#ef5350", decreasing_line_color="#26a69a",
+        ), row=_r, col=1)
+        if bbu:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[bbl], name="BB帶",
+                line=dict(color="rgba(255,165,0,0.4)", dash="dot"),
+                legendgroup="BB", showlegend=True, fill=None), row=_r, col=1)
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[bbu], name="BB上軌",
+                line=dict(color="rgba(255,165,0,0.4)", dash="dot"),
+                legendgroup="BB", showlegend=False,
+                fill="tonexty", fillcolor="rgba(255,165,0,0.07)"), row=_r, col=1)
+        if bbm:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[bbm], name="BB中軌",
+                line=dict(color="rgba(255,165,0,0.9)", dash="dash"),
+                legendgroup="BB", showlegend=False), row=_r, col=1)
+        for ma_c, clr, lbl in [(ma5, "#ff9800", "MA5"), (ma20, "#2196F3", "MA20"), (ma60, "#9C27B0", "MA60")]:
+            if ma_c:
+                fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[ma_c], name=lbl,
+                    line=dict(color=clr, width=1.2)), row=_r, col=1)
+        if _sig_col and h_col and l_col:
+            bull_x, bull_y, bull_txt = [], [], []
+            bear_x, bear_y, bear_txt = [], [], []
+            for date_idx, drow in df_show.iterrows():
+                sig_str = str(drow.get(_sig_col, ""))
+                for kw, _lc, anno in _VLINE_SIGNALS:
+                    if kw in sig_str:
+                        if "買" in anno or "金叉" in anno:
+                            bull_x.append(date_idx); bull_y.append(drow[l_col] * 0.997)
+                            bull_txt.append(anno.replace("▲ ", ""))
+                        else:
+                            bear_x.append(date_idx); bear_y.append(drow[h_col] * 1.003)
+                            bear_txt.append(anno.replace("▼ ", ""))
+                        break
+            if bull_x:
+                fig_main.add_trace(go.Scatter(
+                    x=bull_x, y=bull_y, mode="markers+text",
+                    marker=dict(symbol="triangle-up", size=10, color="#ef5350"),
+                    text=bull_txt, textposition="bottom center",
+                    textfont=dict(size=9, color="#ef5350"), name="買訊",
+                ), row=_r, col=1)
+            if bear_x:
+                fig_main.add_trace(go.Scatter(
+                    x=bear_x, y=bear_y, mode="markers+text",
+                    marker=dict(symbol="triangle-down", size=10, color="#26a69a"),
+                    text=bear_txt, textposition="top center",
+                    textfont=dict(size=9, color="#26a69a"), name="賣訊",
+                ), row=_r, col=1)
+        _gap = find_latest_active_gap(df, h_col, l_col) if (h_col and l_col) else None
+        if _gap:
+            _gtype, _gy0, _gy1, _glabel = _gap
+            fig_main.add_hrect(
+                y0=_gy0, y1=_gy1, row=_r, col=1,
+                fillcolor="rgba(239,83,80,0.18)" if _gtype == "up" else "rgba(38,166,154,0.18)",
+                line_width=0,
+                annotation_text=_glabel, annotation_position="left",
+                annotation_font_size=10,
+                annotation_font_color="#ef5350" if _gtype == "up" else "#26a69a",
+            )
+        fig_main.update_yaxes(title_text="價格(元)", row=_r, col=1, title_standoff=4)
 
-# ── Row 3: MACD ──
-if macd_col:
-    if macd_hist:
-        hc = ["#ef5350" if v >= 0 else "#26a69a" for v in df_show[macd_hist].fillna(0)]
-        fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[macd_hist], name="MACD Hist",
-            marker_color=hc, opacity=0.6), row=3, col=1)
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[macd_col], name="MACD",
-        line=dict(color="#2196F3", width=1.5)), row=3, col=1)
-    if macd_sig:
-        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[macd_sig], name="DIF",
-            line=dict(color="#ff9800", width=1.5)), row=3, col=1)
-    fig_main.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5, row=3, col=1)
+    # ── 成交量 ──
+    if "成交量" in _row_map and vol_col:
+        _r = _row_map["成交量"]
+        vol_colors = ["#ef5350" if df_show[close_col].iloc[i] >= df_show[close_col].iloc[i-1]
+                      else "#26a69a" for i in range(len(df_show))]
+        fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[vol_col], name="成交量",
+            marker_color=vol_colors, opacity=0.7), row=_r, col=1)
+        if vma5_col:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[vma5_col], name="Vol MA5",
+                line=dict(color="#ff9800", width=1.2)), row=_r, col=1)
+        if vma20_col:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[vma20_col], name="Vol MA20",
+                line=dict(color="#2196F3", width=1.2)), row=_r, col=1)
+        fig_main.update_yaxes(title_text="量(張)", row=_r, col=1, title_standoff=4)
 
-# ── Row 4: KD（主軸）+ RSI（副軸）──
-if kd_k:
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[kd_k], name="K",
-        line=dict(color="#2196F3")), row=4, col=1)
-if kd_d:
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[kd_d], name="D",
-        line=dict(color="#ff9800")), row=4, col=1)
-if rsi_col:
-    fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[rsi_col], name="RSI14",
-        line=dict(color="#9C27B0", dash="dot")), row=4, col=1, secondary_y=True)
-fig_main.add_hline(y=80, line_dash="dash", line_color="rgba(239,83,80,0.35)",  row=4, col=1)
-fig_main.add_hline(y=20, line_dash="dash", line_color="rgba(38,166,154,0.35)", row=4, col=1)
-if rsi_col:
-    fig_main.add_hline(y=70, line_dash="dot",  line_color="rgba(239,83,80,0.25)",  row=4, col=1, secondary_y=True)
-    fig_main.add_hline(y=30, line_dash="dot",  line_color="rgba(38,166,154,0.25)", row=4, col=1, secondary_y=True)
+    # ── MACD ──
+    if "MACD" in _row_map and macd_col:
+        _r = _row_map["MACD"]
+        if macd_hist:
+            hc = ["#ef5350" if v >= 0 else "#26a69a" for v in df_show[macd_hist].fillna(0)]
+            fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[macd_hist], name="MACD Hist",
+                marker_color=hc, opacity=0.6), row=_r, col=1)
+        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[macd_col], name="MACD",
+            line=dict(color="#2196F3", width=1.5)), row=_r, col=1)
+        if macd_sig:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[macd_sig], name="DIF",
+                line=dict(color="#ff9800", width=1.5)), row=_r, col=1)
+        fig_main.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5, row=_r, col=1)
+        fig_main.update_yaxes(title_text="MACD", row=_r, col=1, title_standoff=4)
 
-# ── Row 5: 三大法人買賣超 ──
-fi_col  = col(df, "外資買賣超(張)",   "外資買賣超")
-it_col  = col(df, "投信買賣超(張)",   "投信買賣超")
-dl_col  = col(df, "自營商買賣超(張)", "自營商買賣超")
-if fi_col or it_col or dl_col:
-    if fi_col:
-        fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[fi_col], name="外資",
-            marker_color="#2196F3", opacity=0.8), row=5, col=1)
-    if it_col:
-        fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[it_col], name="投信",
-            marker_color="#ff9800", opacity=0.8), row=5, col=1)
-    if dl_col:
-        fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[dl_col], name="自營",
-            marker_color="#9C27B0", opacity=0.8), row=5, col=1)
-    fig_main.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.4, row=5, col=1)
+    # ── KD/RSI ──
+    if "KD/RSI" in _row_map:
+        _r = _row_map["KD/RSI"]
+        if kd_k:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[kd_k], name="K",
+                line=dict(color="#2196F3")), row=_r, col=1)
+        if kd_d:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[kd_d], name="D",
+                line=dict(color="#ff9800")), row=_r, col=1)
+        if rsi_col:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[rsi_col], name="RSI14",
+                line=dict(color="#9C27B0", dash="dot")), row=_r, col=1, secondary_y=True)
+            fig_main.update_yaxes(title_text="RSI(%)", secondary_y=True, row=_r, col=1, title_standoff=4)
+        fig_main.add_hline(y=80, line_dash="dash", line_color="rgba(239,83,80,0.35)",  row=_r, col=1)
+        fig_main.add_hline(y=20, line_dash="dash", line_color="rgba(38,166,154,0.35)", row=_r, col=1)
+        if rsi_col:
+            fig_main.add_hline(y=70, line_dash="dot",  line_color="rgba(239,83,80,0.25)",  row=_r, col=1, secondary_y=True)
+            fig_main.add_hline(y=30, line_dash="dot",  line_color="rgba(38,166,154,0.25)", row=_r, col=1, secondary_y=True)
+        fig_main.update_yaxes(title_text="KD(%)", row=_r, col=1, title_standoff=4)
 
-# ── Row 6: 融資餘額（主軸）+ 融券餘額（副軸）──
-mb_col  = col(df, "融資餘額(張)", "融資餘額")
-ss_col  = col(df, "融券餘額(張)", "融券餘額")
-if mb_col or ss_col:
-    if mb_col:
-        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[mb_col], name="融資餘額",
-            line=dict(color="#ef5350", width=1.8)), row=6, col=1)
-    if ss_col:
-        fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[ss_col], name="融券餘額",
-            line=dict(color="#26a69a", width=1.8)), row=6, col=1, secondary_y=True)
+    # ── 法人 ──
+    if "法人" in _row_map and (fi_col or it_col or dl_col):
+        _r = _row_map["法人"]
+        if fi_col:
+            fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[fi_col], name="外資",
+                marker_color="#2196F3", opacity=0.8), row=_r, col=1)
+        if it_col:
+            fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[it_col], name="投信",
+                marker_color="#ff9800", opacity=0.8), row=_r, col=1)
+        if dl_col:
+            fig_main.add_trace(go.Bar(x=df_show.index, y=df_show[dl_col], name="自營",
+                marker_color="#9C27B0", opacity=0.8), row=_r, col=1)
+        fig_main.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.4, row=_r, col=1)
+        fig_main.update_yaxes(title_text="法人(張)", row=_r, col=1, title_standoff=4)
 
-fig_main.update_yaxes(title_text="價格(元)",   row=1, col=1, title_standoff=4)
-fig_main.update_yaxes(title_text="量(張)",     row=2, col=1, title_standoff=4)
-fig_main.update_yaxes(title_text="MACD",       row=3, col=1, title_standoff=4)
-fig_main.update_yaxes(title_text="KD(%)",      row=4, col=1, title_standoff=4)
-if rsi_col:
-    fig_main.update_yaxes(title_text="RSI(%)", secondary_y=True, row=4, col=1, title_standoff=4)
-fig_main.update_yaxes(title_text="法人(張)",   row=5, col=1, title_standoff=4)
-fig_main.update_yaxes(title_text="融資(張)",   row=6, col=1, title_standoff=4)
-if ss_col:
-    fig_main.update_yaxes(title_text="融券(張)", secondary_y=True, row=6, col=1, title_standoff=4)
-for r in range(1, 6):
-    fig_main.update_xaxes(showticklabels=False, row=r, col=1)
-fig_main.update_layout(
-    height=1060,
-    xaxis_rangeslider_visible=False,
-    margin=dict(t=20, b=20, l=60, r=60),
-    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
-                font=dict(size=11)),
-    hovermode="x unified",
-    barmode="relative",
-)
-st.plotly_chart(fig_main, use_container_width=True)
+    # ── 融資券 ──
+    if "融資券" in _row_map and (mb_col or ss_col):
+        _r = _row_map["融資券"]
+        if mb_col:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[mb_col], name="融資餘額",
+                line=dict(color="#ef5350", width=1.8)), row=_r, col=1)
+        if ss_col:
+            fig_main.add_trace(go.Scatter(x=df_show.index, y=df_show[ss_col], name="融券餘額",
+                line=dict(color="#26a69a", width=1.8)), row=_r, col=1, secondary_y=True)
+            fig_main.update_yaxes(title_text="融券(張)", secondary_y=True, row=_r, col=1, title_standoff=4)
+        if mb_col:
+            fig_main.update_yaxes(title_text="融資(張)", row=_r, col=1, title_standoff=4)
+
+    for _ri in range(1, _n):
+        fig_main.update_xaxes(showticklabels=False, row=_ri, col=1)
+    fig_main.update_layout(
+        height=max(300, int(1060 * _n / 6)),
+        xaxis_rangeslider_visible=False,
+        margin=dict(t=20, b=20, l=60, r=60),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+                    font=dict(size=11)),
+        hovermode="x unified",
+        barmode="relative",
+    )
+    st.plotly_chart(fig_main, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────
 # 圖6：大戶/散戶持股比（週）
