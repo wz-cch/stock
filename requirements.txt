@@ -4,3 +4,5 @@ pandas-ta
 requests
 beautifulsoup4
 openpyxl
+streamlit
+plotly

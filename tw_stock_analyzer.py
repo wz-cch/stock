@@ -19,18 +19,19 @@ PERIOD      = "1y"          # 抓多久的K線："6mo" / "1y" / "2y"
 OUTPUT_DIR  = "data"        # 根輸出目錄（每支股票建立子資料夾）
 # ============================================================
 
-def _load_stock_ids(filepath: str) -> list:
-    """讀取 stocks.txt，回傳代號清單（自動處理 .TW 後綴）"""
-    ids = []
+def _load_stock_ids(filepath: str) -> dict:
+    """讀取 stocks.txt，回傳 {代號: 名稱} dict（名稱省略時以代號代替）"""
+    ids = {}
     try:
         with open(filepath, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                # 移除 .TW / .tw 後綴，程式內部統一用純代號
-                sid = line.upper().removesuffix(".TW")
-                ids.append(sid)
+                parts = line.split(None, 1)  # 最多拆成兩段：代號 名稱
+                sid = parts[0].upper().removesuffix(".TW")
+                name = parts[1].strip() if len(parts) > 1 else sid
+                ids[sid] = name
     except FileNotFoundError:
         print(f"⚠️  找不到 {filepath}，請建立追蹤清單")
     return ids
@@ -441,13 +442,14 @@ def calc_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     print("  ✅ 技術指標與籌碼訊號計算完成")
     return df
 
-def print_latest_summary(df: pd.DataFrame, stock_id: str):
+def print_latest_summary(df: pd.DataFrame, stock_id: str, stock_name: str = ""):
     """印出最新一日的關鍵數字"""
     latest = df.iloc[-1]
     prev   = df.iloc[-2]
+    label  = f"{stock_name} ({stock_id})" if stock_name and stock_name != stock_id else stock_id
     print()
     print("=" * 60)
-    print(f"  📊  {stock_id} 綜合分析摘要（{df.index[-1].date()}）")
+    print(f"  📊  {label} 綜合分析摘要（{df.index[-1].date()}）")
     print("=" * 60)
     print(f"  收盤價   : {latest['收盤']:.1f}  (昨 {prev['收盤']:.1f})")
     print(f"  MA5/10/20: {latest['MA5']} / {latest['MA10']} / {latest['MA20']}")
@@ -559,16 +561,17 @@ def main():
         print("❌ 追蹤清單為空，請在 stocks.txt 中加入股票代號")
         return
 
-    print(f"📋 追蹤清單：{', '.join(stock_ids)}（共 {len(stock_ids)} 支）")
+    labels = [f"{name} ({sid})" for sid, name in stock_ids.items()]
+    print(f"📋 追蹤清單：{', '.join(labels)}（共 {len(stock_ids)} 支）")
     print()
 
-    for stock_id in stock_ids:
+    for stock_id, stock_name in stock_ids.items():
         # 每支股票建立獨立子資料夾
         stock_dir = os.path.join(OUTPUT_DIR, stock_id)
         os.makedirs(stock_dir, exist_ok=True)
 
         print(f"{'='*60}")
-        print(f"  處理中：{stock_id}")
+        print(f"  處理中：{stock_name} ({stock_id})")
         print(f"{'='*60}")
 
         try:
@@ -603,7 +606,7 @@ def main():
             existing_sh = pd.read_csv(sh_path, index_col="日期") if os.path.exists(sh_path) else None
             shareholder_df = fetch_shareholder_dist(stock_id, existing_df=existing_sh)
 
-            print_latest_summary(df, stock_id)
+            print_latest_summary(df, stock_id, stock_name)
             save_outputs(df, rev_df, stock_id, shareholder_df, output_dir=stock_dir)
 
         except Exception as e:
