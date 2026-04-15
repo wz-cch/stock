@@ -249,7 +249,7 @@ if _sig_col:
         for kw, lc, anno in _VLINE_SIGNALS:
             if kw in sig_str:
                 fig1.add_vline(
-                    x=date_idx, line_width=1.2, line_dash="dot", line_color=lc,
+                    x=date_idx.isoformat(), line_width=1.2, line_dash="dot", line_color=lc,
                     annotation_text=anno,
                     annotation_position="top",
                     annotation_font_size=9,
