@@ -118,6 +118,42 @@ _VLINE_SIGNALS = [
     ("RSI超賣",     "rgba(21,101,192,0.60)",  "RSI超賣"),
 ]
 
+def find_latest_active_gap(df, h_col, l_col):
+    """
+    從全部 df 偵測最近一個尚未回補的跳空缺口。
+    回傳 (gap_type, y0, y1, label) 或 None。
+    'up'  = 漲缺（支撐帶，紅）
+    'down'= 跌缺（壓力帶，綠）
+    """
+    if h_col not in df.columns or l_col not in df.columns:
+        return None
+    highs = df[h_col].to_numpy(dtype=float)
+    lows  = df[l_col].to_numpy(dtype=float)
+    n     = len(df)
+    for i in range(n - 1, 0, -1):
+        prev_h, prev_l = highs[i - 1], lows[i - 1]
+        cur_h,  cur_l  = highs[i],     lows[i]
+        if cur_l > prev_h:            # 漲缺：今最低 > 昨最高
+            gap_type, y0, y1 = "up",   prev_h, cur_l
+        elif cur_h < prev_l:          # 跌缺：今最高 < 昨最低
+            gap_type, y0, y1 = "down", cur_h,  prev_l
+        else:
+            continue
+        # 往後確認是否已回補
+        filled = any(
+            (gap_type == "up"   and lows[j]  <= y0) or
+            (gap_type == "down" and highs[j] >= y1)
+            for j in range(i + 1, n)
+        )
+        if not filled:
+            diff  = y1 - y0
+            label = (
+                f"⬆ 支撐 {y0:.1f}–{y1:.1f} (+{diff:.1f})" if gap_type == "up"
+                else f"⬇ 壓力 {y0:.1f}–{y1:.1f} (-{diff:.1f})"
+            )
+            return gap_type, y0, y1, label
+    return None
+
 # ── 側邊欄 ───────────────────────────────────────────────────
 stock_map = load_stock_map(STOCKS_FILE)
 if not stock_map:
@@ -277,6 +313,21 @@ if _sig_col and h_col and l_col:
         ))
 
 fig1.update_layout(height=460, xaxis_rangeslider_visible=False, margin=dict(t=30, b=20))
+
+# 跳空缺口支撐/壓力帶（用全年 df 偵測，色帶橫跨整圖）
+_gap = find_latest_active_gap(df, h_col, l_col) if (h_col and l_col) else None
+if _gap:
+    _gtype, _gy0, _gy1, _glabel = _gap
+    fig1.add_hrect(
+        y0=_gy0, y1=_gy1,
+        fillcolor="rgba(239,83,80,0.18)" if _gtype == "up" else "rgba(38,166,154,0.18)",
+        line_width=0,
+        annotation_text=_glabel,
+        annotation_position="left",
+        annotation_font_size=10,
+        annotation_font_color="#ef5350" if _gtype == "up" else "#26a69a",
+    )
+
 st.plotly_chart(fig1, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────
